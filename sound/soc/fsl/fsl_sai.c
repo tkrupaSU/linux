@@ -899,6 +899,45 @@ static int fsl_sai_trigger(struct snd_pcm_substream *substream, int cmd,
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		/*
+		 * FIFOs need to be reset at each closing/opening of ALSA device
+		 * otherwise channel mapping is random.
+		 *
+		 * Since when in continuous clock mode one wants the clock to
+		 * still be enabled, disabling of transmitter and receiver in
+		 * closing isn't done. Since the FIFOs can only be reset when
+		 * transmitter and receiver are disabled, one needs to do it as
+		 * quickly as possible to avoid clock glitches.
+		 */
+		if (sai->dai_fmt & SND_SOC_DAIFMT_CONT) {
+			/* Disable both directions and reset their FIFOs */
+			regmap_update_bits(sai->regmap, FSL_SAI_TCSR(offset),
+					   FSL_SAI_CSR_TERE, 0);
+			regmap_update_bits(sai->regmap, FSL_SAI_RCSR(offset),
+					   FSL_SAI_CSR_TERE, 0);
+
+			/* TERE will remain set till the end of current frame */
+			do {
+				udelay(10);
+				regmap_read(sai->regmap, FSL_SAI_xCSR(tx, offset), &xcsr);
+			} while (--count && xcsr & FSL_SAI_CSR_TERE);
+
+			/*
+			 * Since this code path is for continuous clocks, let's
+			 * try to minimize the possibility of clock glitches by
+			 * setting Bit Clock Enable when transmitter and
+			 * receiver are disabled.
+			 * This should hopefully lower as much as possible the
+			 * possibility of clock glitches due to
+			 * transmitter/receiver disabling.
+			 */
+			regmap_update_bits(sai->regmap, FSL_SAI_TCSR(offset),
+					   FSL_SAI_CSR_FR | FSL_SAI_CSR_BCE,
+					   FSL_SAI_CSR_FR | FSL_SAI_CSR_BCE);
+			regmap_update_bits(sai->regmap, FSL_SAI_RCSR(offset),
+					   FSL_SAI_CSR_FR | FSL_SAI_CSR_BCE,
+					   FSL_SAI_CSR_FR | FSL_SAI_CSR_BCE);
+		}
 
 		while (tx && i < channels) {
 			if (dl_cfg[dl_cfg_idx].mask[tx] & (1 << j)) {
